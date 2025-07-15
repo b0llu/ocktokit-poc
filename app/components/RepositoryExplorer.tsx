@@ -1,9 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Octokit } from 'octokit';
-import { ForwardRefEditor } from './ForwardRefEditor';
-import { type MDXEditorMethods } from '@mdxeditor/editor';
 
 interface RepoFile {
   name: string;
@@ -59,9 +57,6 @@ const RepositoryExplorer = () => {
   const [branchLoading, setBranchLoading] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [folderContents, setFolderContents] = useState<Map<string, RepoFile[]>>(new Map());
-  const [isMdxEditorMode, setIsMdxEditorMode] = useState(false);
-  
-  const mdxEditorRef = useRef<MDXEditorMethods>(null);
 
   const token = process.env.NEXT_PUBLIC_GITHUB_TOKEN || '';
 
@@ -135,6 +130,7 @@ const RepositoryExplorer = () => {
           // Store folder contents in the map
           setFolderContents(prev => new Map(prev.set(path, repoFiles)));
         }
+
       } else {
         // Single file
         const fileData = response.data as GitHubFileResponse;
@@ -231,8 +227,66 @@ const RepositoryExplorer = () => {
   // Handle file click
   const handleFileClick = (filePath: string) => {
     setIsEditing(false);
-    setIsMdxEditorMode(false);
     fetchFileContent(filePath);
+  };
+
+  // Save file content to GitHub
+  const saveFileContent = async () => {
+    if (!selectedFile || !token) {
+      setError('GitHub token is required to save files');
+      return;
+    }
+
+    if (!commitMessage.trim()) {
+      setError('Commit message is required');
+      return;
+    }
+
+    try {
+      setSaveLoading(true);
+      setError(null);
+      
+      const octokit = createOctokitInstance();
+      
+      // Encode content to base64
+      const encodedContent = btoa(editedContent);
+      
+      await octokit.rest.repos.createOrUpdateFileContents({
+        owner,
+        repo,
+        path: selectedFile.path,
+        message: commitMessage,
+        content: encodedContent,
+        sha: selectedFile.sha,
+        branch: selectedBranch,
+      });
+
+      // Refresh the file content
+      await fetchFileContent(selectedFile.path);
+      setIsEditing(false);
+      setCommitMessage('');
+      
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save file');
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
+  // Start editing
+  const startEditing = () => {
+    if (selectedFile) {
+      setEditedContent(selectedFile.content);
+      setIsEditing(true);
+      setCommitMessage(`Update ${selectedFile.name}`);
+    }
+  };
+
+  // Cancel editing
+  const cancelEditing = () => {
+    setIsEditing(false);
+    setEditedContent('');
+    setCommitMessage('');
   };
 
   // Get file icon based on extension
@@ -253,8 +307,6 @@ const RepositoryExplorer = () => {
         return '🐍';
       case 'md':
         return '📝';
-      case 'mdx':
-        return '📝✨'; // Special icon for MDX files
       case 'json':
         return '📄';
       case 'css':
@@ -270,11 +322,6 @@ const RepositoryExplorer = () => {
       default:
         return '📄';
     }
-  };
-
-  // Check if file is MDX
-  const isMdxFile = (fileName: string) => {
-    return fileName.toLowerCase().endsWith('.mdx');
   };
 
   // Format file size
@@ -335,7 +382,6 @@ const RepositoryExplorer = () => {
       };
       initializeRepo();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-fetch content when branches are loaded
@@ -343,7 +389,6 @@ const RepositoryExplorer = () => {
     if (branches.length > 0 && selectedBranch) {
       fetchRepoContents();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branches, selectedBranch]);
 
   // Clear state when branch changes
@@ -353,105 +398,6 @@ const RepositoryExplorer = () => {
       setFolderContents(new Map());
       setSelectedFile(null);
       setIsEditing(false);
-      setIsMdxEditorMode(false);
-    }
-  }, [selectedBranch]);
-
-  // Save file content to GitHub (enhanced for MDX)
-  const saveFileContent = async () => {
-    if (!selectedFile || !token) {
-      setError('GitHub token is required to save files');
-      return;
-    }
-
-    if (!commitMessage.trim()) {
-      setError('Commit message is required');
-      return;
-    }
-
-    try {
-      setSaveLoading(true);
-      setError(null);
-      
-      const octokit = createOctokitInstance();
-      
-      // Get content from appropriate editor
-      let contentToSave = editedContent;
-      if (isMdxEditorMode && mdxEditorRef.current) {
-        contentToSave = mdxEditorRef.current.getMarkdown();
-      }
-      
-      // Encode content to base64
-      const encodedContent = btoa(contentToSave);
-      
-      await octokit.rest.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: selectedFile.path,
-        message: commitMessage,
-        content: encodedContent,
-        sha: selectedFile.sha,
-        branch: selectedBranch,
-      });
-
-      // Refresh the file content
-      await fetchFileContent(selectedFile.path);
-      setIsEditing(false);
-      setIsMdxEditorMode(false);
-      setCommitMessage('');
-      
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save file');
-    } finally {
-      setSaveLoading(false);
-    }
-  };
-
-  // Start editing (enhanced for MDX)
-  const startEditing = (useMdxEditor = false) => {
-    if (selectedFile) {
-      setEditedContent(selectedFile.content);
-      setIsEditing(true);
-      setIsMdxEditorMode(useMdxEditor);
-      setCommitMessage(`Update ${selectedFile.name}`);
-    }
-  };
-
-  // Cancel editing
-  const cancelEditing = () => {
-    setIsEditing(false);
-    setIsMdxEditorMode(false);
-    setEditedContent('');
-    setCommitMessage('');
-  };
-
-  // Initial load
-  useEffect(() => {
-    if (owner && repo) {
-      const initializeRepo = async () => {
-        await fetchBranches();
-      };
-      initializeRepo();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Auto-fetch content when branches are loaded
-  useEffect(() => {
-    if (branches.length > 0 && selectedBranch) {
-      fetchRepoContents();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branches, selectedBranch]);
-
-  // Clear state when branch changes
-  useEffect(() => {
-    if (selectedBranch) {
-      setExpandedFolders(new Set());
-      setFolderContents(new Map());
-      setSelectedFile(null);
-      setIsEditing(false);
-      setIsMdxEditorMode(false);
     }
   }, [selectedBranch]);
 
@@ -547,49 +493,32 @@ const RepositoryExplorer = () => {
           </div>
 
           {/* Main Content Area */}
-          <div className="flex-1 overflow-hidden bg-white dark:bg-gray-800">
+          <div className="flex-1 overflow-y-auto bg-white dark:bg-gray-800">
             {selectedFile ? (
-              <div className="h-full flex flex-col">
+              <div className="p-4 h-full flex flex-col">
                 {/* File Header */}
-                <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-                  <div className="flex items-center space-x-3">
-                    <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-                      {selectedFile.name}
-                    </h3>
-                    {isMdxFile(selectedFile.name) && (
-                      <span className="px-2 py-1 bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 text-xs rounded-full">
-                        MDX
-                      </span>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                    {selectedFile.name}
+                  </h3>
                   <div className="flex items-center space-x-4">
                     <div className="text-sm text-gray-500 dark:text-gray-400">
                       {formatFileSize(selectedFile.size)}
                     </div>
                     {!isEditing && token && (
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => startEditing(false)}
-                          className="px-3 py-1 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                          Edit Text
-                        </button>
-                        {isMdxFile(selectedFile.name) && (
-                          <button
-                            onClick={() => startEditing(true)}
-                            className="px-3 py-1 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                          >
-                            Edit MDX
-                          </button>
-                        )}
-                      </div>
+                      <button
+                        onClick={startEditing}
+                        className="px-3 py-1 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        Edit
+                      </button>
                     )}
                   </div>
                 </div>
 
-                {/* Content Area */}
+                {/* Editing Mode */}
                 {isEditing ? (
-                  <div className="flex-1 flex flex-col p-4 space-y-4 overflow-hidden">
+                  <div className="flex-1 flex flex-col space-y-4">
                     {/* Commit Message */}
                     <div>
                       <label htmlFor="commit-message" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -605,59 +534,17 @@ const RepositoryExplorer = () => {
                       />
                     </div>
 
-                    {/* Editor Area */}
-                    <div className="flex-1 flex overflow-hidden">
-                      {isMdxEditorMode && isMdxFile(selectedFile.name) ? (
-                        // Side-by-side MDX view
-                        <div className="flex w-full h-full space-x-4">
-                          {/* Preview Panel */}
-                          <div className="flex-1 flex flex-col">
-                            <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                              Preview
-                            </h4>
-                            <div className="flex-1 border border-gray-300 dark:border-gray-600 rounded-md overflow-hidden">
-                              <ForwardRefEditor
-                                ref={mdxEditorRef}
-                                markdown={selectedFile.content}
-                                readOnly={false}
-                                className="h-full"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Source Panel */}
-                          <div className="flex-1 flex flex-col">
-                            <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                              Source
-                            </h4>
-                            <textarea
-                              value={editedContent}
-                              onChange={(e) => {
-                                setEditedContent(e.target.value);
-                                // Sync with MDX editor
-                                if (mdxEditorRef.current) {
-                                  mdxEditorRef.current.setMarkdown(e.target.value);
-                                }
-                              }}
-                              className="flex-1 w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white font-mono text-sm resize-none"
-                              placeholder="MDX content..."
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        // Regular text editor
-                        <div className="flex-1 flex flex-col">
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            File Content
-                          </label>
-                          <textarea
-                            value={editedContent}
-                            onChange={(e) => setEditedContent(e.target.value)}
-                            className="flex-1 w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white font-mono text-sm resize-none"
-                            placeholder="File content..."
-                          />
-                        </div>
-                      )}
+                    {/* Editor */}
+                    <div className="flex-1 flex flex-col">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        File Content
+                      </label>
+                      <textarea
+                        value={editedContent}
+                        onChange={(e) => setEditedContent(e.target.value)}
+                        className="flex-1 w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white font-mono text-sm resize-none"
+                        placeholder="File content..."
+                      />
                     </div>
 
                     {/* Action Buttons */}
@@ -680,24 +567,12 @@ const RepositoryExplorer = () => {
                   </div>
                 ) : (
                   /* View Mode */
-                  <div className="flex-1 overflow-hidden p-4">
-                    {isMdxFile(selectedFile.name) ? (
-                      // MDX Preview Mode
-                      <div className="h-full border border-gray-300 dark:border-gray-600 rounded-md overflow-hidden">
-                        <ForwardRefEditor
-                          markdown={selectedFile.content}
-                          readOnly={true}
-                          className="h-full"
-                        />
-                      </div>
-                    ) : (
-                      // Regular file view
-                      <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-4 h-full overflow-auto">
-                        <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
-                          {selectedFile.content || 'Binary file or content too large to display'}
-                        </pre>
-                      </div>
-                    )}
+                  <div className="flex-1 overflow-hidden">
+                    <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-4 h-full overflow-auto">
+                      <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                        {selectedFile.content || 'Binary file or content too large to display'}
+                      </pre>
+                    </div>
                   </div>
                 )}
               </div>
@@ -706,7 +581,6 @@ const RepositoryExplorer = () => {
                 <div className="text-center">
                   <div className="text-4xl mb-4">📁</div>
                   <p>Select a file to view its content</p>
-                  <p className="text-sm mt-2">MDX files will show rich preview and editing</p>
                 </div>
               </div>
             )}
